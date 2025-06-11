@@ -107,69 +107,124 @@ class TranslationBot:
     async def create_gif(self, text: str, language: str, original_text: str) -> Tuple[Optional[bytes], str]:
         """Create an animated GIF from text"""
         try:
-            # GIF settings
-            width, height = 500, 300
+            # Higher quality GIF settings
+            width, height = 800, 450
             frames = 20
             
             # Wrap text for better display
-            wrapped_text = textwrap.fill(text, width=25)
+            wrapped_text = textwrap.fill(text, width=30)
             
             # Create frames
             gif_frames = []
             
             for frame_num in range(frames):
-                # Create frame
-                img = Image.new('RGB', (width, height), color='white')
+                # Create frame with higher quality
+                img = Image.new('RGBA', (width, height), color=(255, 255, 255, 255))
                 draw = ImageDraw.Draw(img)
                 
-                # Try to load a font, fallback to default if not available
-                try:
-                    font_size = 24
-                    font = ImageFont.truetype("/System/Library/Fonts/Arial.ttf", font_size)
-                except:
+                # Try to load better fonts with fallbacks for Raspberry Pi
+                font = None
+                font_size = 32
+                font_paths = [
+                    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",  # Raspberry Pi
+                    "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",  # Common Linux
+                    "/System/Library/Fonts/Arial.ttf",  # macOS
+                    "/Windows/Fonts/arial.ttf",  # Windows
+                ]
+                
+                for font_path in font_paths:
                     try:
-                        font = ImageFont.truetype("arial.ttf", font_size)
-                    except:
+                        font = ImageFont.truetype(font_path, font_size)
+                        break
+                    except (OSError, IOError):
+                        continue
+                
+                # If no system font found, try smaller default size
+                if font is None:
+                    try:
                         font = ImageFont.load_default()
+                        # Scale up the default font effect
+                        font_size = 20
+                    except:
+                        font_size = 16
                 
-                # Calculate text position
-                text_bbox = draw.textbbox((0, 0), wrapped_text, font=font)
-                text_width = text_bbox[2] - text_bbox[0]
-                text_height = text_bbox[3] - text_bbox[1]
+                # Calculate text position with better centering
+                text_lines = wrapped_text.split('\n')
+                total_text_height = len(text_lines) * font_size * 1.2
                 
-                x = (width - text_width) // 2
-                y = (height - text_height) // 2 - 20
+                start_y = (height - total_text_height) // 2 - 30
                 
-                # Animated color effect
-                hue = (frame_num * 360 // frames) % 360
-                color = self.hsv_to_rgb(hue, 100, 80)
+                # Draw each line of text
+                for i, line in enumerate(text_lines):
+                    if font:
+                        text_bbox = draw.textbbox((0, 0), line, font=font)
+                        line_width = text_bbox[2] - text_bbox[0]
+                    else:
+                        line_width = len(line) * (font_size * 0.6)
+                    
+                    x = (width - line_width) // 2
+                    y = start_y + (i * font_size * 1.3)
+                    
+                    # Animated color effect with better colors
+                    hue = (frame_num * 360 // frames) % 360
+                    color = self.hsv_to_rgb(hue, 85, 95)
+                    
+                    # Add text shadow for better readability
+                    shadow_offset = 2
+                    draw.text((x + shadow_offset, y + shadow_offset), line, fill=(0, 0, 0, 100), font=font)
+                    draw.text((x, y), line, fill=color, font=font)
                 
-                # Draw text
-                draw.text((x, y), wrapped_text, fill=color, font=font)
+                # Draw language info with smaller font
+                lang_font_size = max(16, font_size - 8)
+                lang_font = None
                 
-                # Draw language info
-                lang_text = f"Language: {language}"
-                lang_y = y + text_height + 20
-                draw.text((x, lang_y), lang_text, fill='black', font=font)
+                for font_path in font_paths:
+                    try:
+                        lang_font = ImageFont.truetype(font_path, lang_font_size)
+                        break
+                    except (OSError, IOError):
+                        continue
                 
-                gif_frames.append(img)
+                if lang_font is None:
+                    lang_font = font
+                
+                lang_text = f"→ {language}"
+                if lang_font:
+                    lang_bbox = draw.textbbox((0, 0), lang_text, font=lang_font)
+                    lang_width = lang_bbox[2] - lang_bbox[0]
+                else:
+                    lang_width = len(lang_text) * (lang_font_size * 0.6)
+                
+                lang_x = (width - lang_width) // 2
+                lang_y = start_y + total_text_height + 20
+                
+                # Language info in a subtle color
+                draw.text((lang_x, lang_y), lang_text, fill=(100, 100, 100), font=lang_font)
+                
+                # Convert RGBA to RGB for GIF compatibility
+                rgb_img = Image.new('RGB', (width, height), (255, 255, 255))
+                rgb_img.paste(img, mask=img.split()[-1] if img.mode == 'RGBA' else None)
+                
+                gif_frames.append(rgb_img)
             
-            # Save GIF to bytes
+            # Save GIF with better quality settings
             gif_bytes = BytesIO()
             gif_frames[0].save(
                 gif_bytes,
                 format='GIF',
                 save_all=True,
                 append_images=gif_frames[1:],
-                duration=100,  # 100ms per frame
-                loop=0
+                duration=150,  # Slightly slower for better viewing
+                loop=0,
+                optimize=True,  # Enable optimization
+                quality=95  # Higher quality
             )
             gif_bytes.seek(0)
             
             # Generate filename
             filename = f"translation_{uuid.uuid4().hex[:8]}.gif"
             
-            logger.info(f"Created GIF with {len(gif_frames)} frames")
+            logger.info(f"Created GIF with {len(gif_frames)} frames at {width}x{height}")
             return gif_bytes.getvalue(), filename
             
         except Exception as e:
