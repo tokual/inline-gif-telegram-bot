@@ -24,32 +24,53 @@ class TranslationBot:
         self.bot_token = bot_token
         self.application = Application.builder().token(bot_token).build()
         
-        # Language codes for random translation
+        # Language codes for random translation (only Latin-based languages)
         self.languages = {
             'es': 'Spanish',
             'fr': 'French', 
             'de': 'German',
             'it': 'Italian',
             'pt': 'Portuguese',
-            'ru': 'Russian',
-            'ja': 'Japanese',
-            'ko': 'Korean',
-            'zh': 'Chinese',
-            'ar': 'Arabic',
-            'hi': 'Hindi',
-            'tr': 'Turkish',
             'pl': 'Polish',
             'nl': 'Dutch',
             'sv': 'Swedish',
             'da': 'Danish',
             'no': 'Norwegian',
-            'fi': 'Finnish',
-            'el': 'Greek',
-            'he': 'Hebrew'
+            'fi': 'Finnish'
         }
+        
+        # Load whitelist
+        self.whitelist = self.load_whitelist()
         
         # Setup handlers
         self.application.add_handler(InlineQueryHandler(self.handle_inline_query))
+    
+    def load_whitelist(self) -> set:
+        """Load whitelisted user IDs from .whitelist file"""
+        try:
+            with open('.whitelist', 'r') as f:
+                whitelist = set()
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith('#'):
+                        # Extract just the numeric ID
+                        if line.isdigit():
+                            whitelist.add(line)
+                        else:
+                            # Handle format like "@username 12345" or "12345 # username"
+                            parts = line.split()
+                            for part in parts:
+                                if part.isdigit():
+                                    whitelist.add(part)
+                                    break
+                return whitelist
+        except FileNotFoundError:
+            logger.warning("No .whitelist file found")
+            return set()
+    
+    def is_user_whitelisted(self, user_id: int) -> bool:
+        """Check if user is whitelisted"""
+        return str(user_id) in self.whitelist
     
     async def translate_text(self, text: str) -> Tuple[str, str, str]:
         """Translate text to a random language using Google Translate API"""
@@ -285,8 +306,7 @@ class TranslationBot:
                     id=result_id,
                     gif_url=gif_url,
                     thumbnail_url=gif_url,
-                    title=f"🌍 {translated_text}",
-                    caption=f"🔤 Original: {query}\n🌍 {lang_name}: {translated_text}"
+                    title=f"🌍 {translated_text}"
                 )
             ]
             
@@ -314,6 +334,22 @@ class TranslationBot:
     async def handle_inline_query(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle inline queries"""
         try:
+            # Check if user is whitelisted
+            user_id = update.inline_query.from_user.id
+            if not self.is_user_whitelisted(user_id):
+                logger.warning(f"Unauthorized user {user_id} tried to use bot")
+                await update.inline_query.answer(
+                    [InlineQueryResultGif(
+                        id=str(uuid.uuid4()),
+                        gif_url="https://media.giphy.com/media/l2JehQ2GitHGdVG9y/giphy.gif",
+                        thumbnail_url="https://media.giphy.com/media/l2JehQ2GitHGdVG9y/giphy.gif",
+                        title="❌ Access Denied",
+                        caption="You are not authorized to use this bot."
+                    )],
+                    cache_time=1
+                )
+                return
+            
             query = update.inline_query.query.strip()
             logger.info(f"Received inline query: '{query}'")
             
