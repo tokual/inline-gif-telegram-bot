@@ -3,6 +3,7 @@ import logging
 import os
 import random
 import uuid
+import time
 from io import BytesIO
 from typing import List, Tuple, Optional
 
@@ -41,6 +42,10 @@ class TranslationBot:
         
         # Load whitelist
         self.whitelist = self.load_whitelist()
+        
+        # Query debouncing - track last query time per user
+        self.user_query_times = {}
+        self.debounce_delay = 2.0  # Increased to 2.0 seconds for Raspberry Pi
         
         # Setup handlers
         self.application.add_handler(InlineQueryHandler(self.handle_inline_query))
@@ -387,7 +392,7 @@ class TranslationBot:
         ]
     
     async def handle_inline_query(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Handle inline queries"""
+        """Handle inline queries with debouncing"""
         try:
             # Check if user is whitelisted
             user_id = update.inline_query.from_user.id
@@ -406,7 +411,18 @@ class TranslationBot:
                 return
             
             query = update.inline_query.query.strip()
-            logger.info(f"Received inline query: '{query}'")
+            current_time = time.time()
+            
+            # Check if there was a previous query that will be superseded
+            previous_time = self.user_query_times.get(user_id)
+            if previous_time:
+                time_diff = current_time - previous_time
+                logger.info(f"User {user_id} had previous query {time_diff:.2f}s ago - will be superseded")
+            
+            # Update user's last query time
+            self.user_query_times[user_id] = current_time
+            
+            logger.info(f"Received inline query from user {user_id}: '{query}' (will wait {self.debounce_delay}s)")
             
             if not query:
                 # Show help message for empty query using a simple GIF result
@@ -425,33 +441,59 @@ class TranslationBot:
                 )
                 return
             
-            # Process query with timeout
-            async def delayed_processing():
+            # Debounce mechanism - wait before processing
+            async def debounced_processing():
                 try:
+                    # Wait for debounce delay
+                    logger.info(f"Starting {self.debounce_delay}s wait for query from user {user_id}: '{query}'")
+                    await asyncio.sleep(self.debounce_delay)
+                    
+                    # Check if this query is still the latest for this user
+                    latest_time = self.user_query_times.get(user_id)
+                    if latest_time != current_time:
+                        logger.info(f"Query '{query}' from user {user_id} superseded by newer query (time mismatch: {current_time} vs {latest_time}), skipping")
+                        return
+                    
+                    logger.info(f"Processing debounced query from user {user_id}: '{query}' (passed debounce check)")
+                    
+                    # Process query with timeout (reduced to account for debounce delay)
                     results = await asyncio.wait_for(
                         self.create_translation_result(query), 
-                        timeout=25.0  # Leave 5 seconds buffer before Telegram timeout
+                        timeout=28.0  # Reduced timeout to account for longer debounce delay
                     )
                     
+                    # Double-check if query is still current before sending results
+                    if self.user_query_times.get(user_id) != current_time:
+                        logger.info(f"Query '{query}' from user {user_id} outdated after processing, not sending results")
+                        return
+                    
                     if results:
-                        logger.info(f"Sending {len(results)} results for query: '{query}'")
+                        logger.info(f"Sending {len(results)} results for query: '{query}' from user {user_id}")
                         await update.inline_query.answer(results, cache_time=0)
                     else:
-                        logger.warning(f"No results for query: '{query}', sending error result")
+                        logger.warning(f"No results for query: '{query}' from user {user_id}, sending error result")
                         error_results = self.create_error_result("No results found")
                         await update.inline_query.answer(error_results, cache_time=1)
                         
                 except asyncio.TimeoutError:
-                    logger.error(f"Processing timed out for query: '{query}'")
-                    timeout_results = self.create_error_result("Processing timed out")
-                    await update.inline_query.answer(timeout_results, cache_time=1)
+                    # Only send timeout error if query is still current
+                    if self.user_query_times.get(user_id) == current_time:
+                        logger.error(f"Processing timed out for query: '{query}' from user {user_id}")
+                        timeout_results = self.create_error_result("Processing timed out")
+                        await update.inline_query.answer(timeout_results, cache_time=1)
+                    else:
+                        logger.info(f"Query '{query}' from user {user_id} timed out but was already superseded")
                 except Exception as e:
-                    logger.error(f"Error in delayed_processing: {e}")
-                    error_results = self.create_error_result("An error occurred")
-                    await update.inline_query.answer(error_results, cache_time=1)
+                    # Only send error if query is still current
+                    if self.user_query_times.get(user_id) == current_time:
+                        logger.error(f"Error in debounced_processing: {e}")
+                        error_results = self.create_error_result("An error occurred")
+                        await update.inline_query.answer(error_results, cache_time=1)
+                    else:
+                        logger.info(f"Query '{query}' from user {user_id} had error but was already superseded")
             
-            # Start processing in background
-            asyncio.create_task(delayed_processing())
+            # Start debounced processing in background
+            asyncio.create_task(debounced_processing())
             
         except Exception as e:
             logger.error(f"Error in handle_inline_query: {e}")
