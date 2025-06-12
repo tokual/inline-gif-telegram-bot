@@ -1,0 +1,28 @@
+# Whitelist file for authorized users
+# Lines starting with # are comments and will be ignored
+# You can use any of these formats:
+
+# Format 1: Just the user ID
+123456789
+
+# Format 2: User ID with username as comment
+987654321 # @username
+
+# Format 3: Username followed by user ID (bot will extract the ID)
+@alice_smith 456789123
+
+# Format 4: Mixed format with comments
+111222333   # Alice - Admin
+444555666   # Bob - Developer
+
+# To get your user ID, you can:
+# 1. Message @userinfobot on Telegram / @username_to_id_bot on Telegram
+# 2. Use @raw_data_bot
+# 3. Check bot logs when someone tries to use it (unauthorized attempts are logged)
+
+# Example entries (replace with real user IDs):
+# 12345678    # Replace with actual user ID
+# 87654321    # Replace with actual user ID  
+# 55667788    # Replace with actual user ID
+
+23682616   # Medpack - Developer

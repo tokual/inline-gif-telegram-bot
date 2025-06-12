@@ -14,9 +14,10 @@ from telegram.ext import Application, InlineQueryHandler, ContextTypes
 import textwrap
 
 # Configure logging
+log_level = getattr(logging, os.getenv('LOG_LEVEL', 'INFO').upper())
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
+    level=log_level
 )
 logger = logging.getLogger(__name__)
 
@@ -24,6 +25,9 @@ class TranslationBot:
     def __init__(self, bot_token: str):
         self.bot_token = bot_token
         self.application = Application.builder().token(bot_token).build()
+        
+        # Load configuration from environment variables
+        self.load_config()
         
         # Language codes for random translation (only Latin-based languages)
         self.languages = {
@@ -45,10 +49,36 @@ class TranslationBot:
         
         # Query debouncing - track last query time per user
         self.user_query_times = {}
-        self.debounce_delay = 2.0  # Increased to 2.0 seconds for Raspberry Pi
         
         # Setup handlers
         self.application.add_handler(InlineQueryHandler(self.handle_inline_query))
+    
+    def load_config(self):
+        """Load configuration from environment variables with defaults"""
+        # Query processing configuration
+        self.debounce_delay = float(os.getenv('DEBOUNCE_DELAY', '2.0'))
+        self.processing_timeout = float(os.getenv('PROCESSING_TIMEOUT', '28.0'))
+        
+        # GIF generation configuration
+        self.gif_width = int(os.getenv('GIF_WIDTH', '800'))
+        self.gif_height = int(os.getenv('GIF_HEIGHT', '450'))
+        self.gif_frames = int(os.getenv('GIF_FRAMES', '20'))
+        self.gif_duration = int(os.getenv('GIF_DURATION', '150'))
+        self.gif_quality = int(os.getenv('GIF_QUALITY', '95'))
+        
+        # Font configuration
+        self.main_font_size = int(os.getenv('MAIN_FONT_SIZE', '32'))
+        self.lang_font_size = int(os.getenv('LANG_FONT_SIZE', '16'))
+        self.text_wrap_width = int(os.getenv('TEXT_WRAP_WIDTH', '30'))
+        
+        # Animation configuration
+        self.hue_saturation = int(os.getenv('HUE_SATURATION', '85'))
+        self.hue_value = int(os.getenv('HUE_VALUE', '95'))
+        
+        # Upload configuration
+        self.upload_timeout = int(os.getenv('UPLOAD_TIMEOUT', '30'))
+        
+        logger.info(f"Loaded config: {self.gif_width}x{self.gif_height}, {self.gif_frames} frames, {self.debounce_delay}s debounce")
     
     def load_whitelist(self) -> set:
         """Load whitelisted user IDs from .whitelist file"""
@@ -112,12 +142,12 @@ class TranslationBot:
     async def create_gif(self, text: str, language: str, original_text: str) -> Tuple[Optional[bytes], str]:
         """Create an animated GIF from text"""
         try:
-            # Higher quality GIF settings
-            width, height = 800, 450
-            frames = 20
+            # Use configured GIF settings
+            width, height = self.gif_width, self.gif_height
+            frames = self.gif_frames
             
             # Wrap text for better display
-            wrapped_text = textwrap.fill(text, width=30)
+            wrapped_text = textwrap.fill(text, width=self.text_wrap_width)
             
             # Create frames
             gif_frames = []
@@ -129,7 +159,7 @@ class TranslationBot:
                 
                 # Try to load better fonts with fallbacks for Raspberry Pi
                 font = None
-                font_size = 32
+                font_size = self.main_font_size
                 font_paths = [
                     "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",  # Raspberry Pi
                     "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",  # Common Linux
@@ -170,9 +200,9 @@ class TranslationBot:
                     x = (width - line_width) // 2
                     y = start_y + (i * font_size * 1.3)
                     
-                    # Animated color effect with better colors
+                    # Animated color effect with configurable colors
                     hue = (frame_num * 360 // frames) % 360
-                    color = self.hsv_to_rgb(hue, 85, 95)
+                    color = self.hsv_to_rgb(hue, self.hue_saturation, self.hue_value)
                     
                     # Add text shadow for better readability
                     shadow_offset = 2
@@ -180,7 +210,7 @@ class TranslationBot:
                     draw.text((x, y), line, fill=color, font=font)
                 
                 # Draw language info with smaller font
-                lang_font_size = max(16, font_size - 8)
+                lang_font_size = max(self.lang_font_size, font_size - 8)
                 lang_font = None
                 
                 for font_path in font_paths:
@@ -212,17 +242,17 @@ class TranslationBot:
                 
                 gif_frames.append(rgb_img)
             
-            # Save GIF with better quality settings
+            # Save GIF with configured quality settings
             gif_bytes = BytesIO()
             gif_frames[0].save(
                 gif_bytes,
                 format='GIF',
                 save_all=True,
                 append_images=gif_frames[1:],
-                duration=150,  # Slightly slower for better viewing
+                duration=self.gif_duration,
                 loop=0,
-                optimize=True,  # Enable optimization
-                quality=95  # Higher quality
+                optimize=True,
+                quality=self.gif_quality
             )
             gif_bytes.seek(0)
             
@@ -280,7 +310,7 @@ class TranslationBot:
             data.add_field('files[]', gif_bytes, filename=filename, content_type='image/gif')
             
             async with aiohttp.ClientSession() as session:
-                async with session.post(url, data=data, timeout=30) as response:
+                async with session.post(url, data=data, timeout=self.upload_timeout) as response:
                     if response.status == 200:
                         result = await response.json()
                         
@@ -456,10 +486,10 @@ class TranslationBot:
                     
                     logger.info(f"Processing debounced query from user {user_id}: '{query}' (passed debounce check)")
                     
-                    # Process query with timeout (reduced to account for debounce delay)
+                    # Process query with configured timeout
                     results = await asyncio.wait_for(
                         self.create_translation_result(query), 
-                        timeout=28.0  # Reduced timeout to account for longer debounce delay
+                        timeout=self.processing_timeout
                     )
                     
                     # Double-check if query is still current before sending results
