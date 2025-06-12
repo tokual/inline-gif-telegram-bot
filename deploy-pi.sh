@@ -8,8 +8,8 @@ sudo apt update
 sudo apt install -y python3 python3-pip python3-venv libjpeg-dev zlib1g-dev libfreetype6-dev
 
 # Create virtual environment
-python3 -m venv venv
-source venv/bin/activate
+python3 -m venv .venv
+source .venv/bin/activate
 
 # Install Python packages
 pip install -r requirements.txt
@@ -36,8 +36,8 @@ After=network.target
 Type=simple
 User=$(whoami)
 WorkingDirectory=$(pwd)
-Environment=PATH=$(pwd)/venv/bin
-ExecStart=$(pwd)/venv/bin/python $(pwd)/bot.py
+Environment=PATH=$(pwd)/.venv/bin
+ExecStart=$(pwd)/.venv/bin/python $(pwd)/bot.py
 Restart=always
 RestartSec=10
 EnvironmentFile=$(pwd)/.env
