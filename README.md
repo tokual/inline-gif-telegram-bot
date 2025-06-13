@@ -24,3 +24,18 @@
    ```
 
 That's it!
+
+## How to Update
+
+```bash
+cd inline-gif-telegram-bot
+git pull origin main
+sudo systemctl restart telegram-bot
+```
+
+If you get merge conflicts due to local changes, force update with:
+```bash
+git reset --hard HEAD
+git pull origin main
+sudo systemctl restart telegram-bot
+```
