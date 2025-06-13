@@ -9,7 +9,7 @@ from typing import List, Tuple, Optional
 
 import aiohttp
 from PIL import Image, ImageDraw, ImageFont
-from telegram import Update, InlineQueryResultGif, InputTextMessageContent
+from telegram import Update, InlineQueryResultGif, InlineQueryResultArticle, InputTextMessageContent, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, InlineQueryHandler, ContextTypes
 import textwrap
 
@@ -29,8 +29,9 @@ class TranslationBot:
         # Load configuration from environment variables
         self.load_config()
         
-        # Language codes for random translation (only Latin-based languages)
+        # Language codes for translation (Latin and non-Latin languages)
         self.languages = {
+            # Latin-based languages
             'es': 'Spanish',
             'fr': 'French', 
             'de': 'German',
@@ -41,8 +42,19 @@ class TranslationBot:
             'sv': 'Swedish',
             'da': 'Danish',
             'no': 'Norwegian',
-            'fi': 'Finnish'
+            'fi': 'Finnish',
+            # Non-Latin languages
+            'ru': 'Russian',
+            'ar': 'Arabic'
         }
+        
+        # Languages that require special font handling
+        self.non_latin_languages = {'ru', 'ar'}
+
+        # Language command mapping for inline queries (including /random)
+        self.language_commands = {f'/{k}': k for k in self.languages.keys()}
+        self.language_commands['/random'] = 'random'  # Special case for random selection
+        self.language_commands['/help'] = 'help'  # Special case for help
         
         # Load whitelist
         self.whitelist = self.load_whitelist()
@@ -107,12 +119,41 @@ class TranslationBot:
         """Check if user is whitelisted"""
         return str(user_id) in self.whitelist
     
-    async def translate_text(self, text: str) -> Tuple[str, str, str]:
-        """Translate text to a random language using Google Translate API"""
+    def parse_language_command(self, query: str) -> Tuple[str, Optional[str]]:
+        """Parse language command from query. Returns (text, language_code)"""
+        query = query.strip()
+        
+        # Check for help command
+        if query.lower() == '/help' or query.lower().startswith('/help '):
+            return 'help', 'help'
+        
+        # Check if query starts with a language command
+        for command, lang_code in self.language_commands.items():
+            if command == '/help':  # Skip help command in this loop
+                continue
+            if query.lower().startswith(command.lower()):
+                # Extract the text after the command
+                remaining_text = query[len(command):].strip()
+                if remaining_text:  # Only return if there's text to translate
+                    # Handle special case for /random
+                    if lang_code == 'random':
+                        return remaining_text, None  # None means random selection
+                    else:
+                        return remaining_text, lang_code
+                break
+        
+        return query, None
+    
+    async def translate_text(self, text: str, target_language: Optional[str] = None) -> Tuple[str, str, str]:
+        """Translate text to specified language or random language"""
         try:
-            # Select random target language
-            lang_code = random.choice(list(self.languages.keys()))
-            lang_name = self.languages[lang_code]
+            # Use specified language or select random
+            if target_language and target_language in self.languages:
+                lang_code = target_language
+                lang_name = self.languages[lang_code]
+            else:
+                lang_code = random.choice(list(self.languages.keys()))
+                lang_name = self.languages[lang_code]
             
             # Using Google Translate API (free tier)
             url = "https://translate.googleapis.com/translate_a/single"
@@ -139,6 +180,62 @@ class TranslationBot:
             logger.error(f"Translation error: {e}")
             return text, "English", "en"  # Fallback
     
+    def get_font_for_language(self, language_code: str, font_size: int) -> Tuple[Optional[object], int]:
+        """Get appropriate font for the given language code"""
+        if language_code in self.non_latin_languages:
+            # Font paths for non-Latin languages
+            non_latin_font_paths = [
+                # Russian/Cyrillic fonts
+                "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",  # Has Cyrillic
+                "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",  # Has Cyrillic
+                "/System/Library/Fonts/Arial.ttf",  # macOS
+                # Arabic fonts
+                "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",  # Has some Arabic
+                "/usr/share/fonts/truetype/noto/NotoSansArabic-Regular.ttf",  # Noto Arabic
+                "/System/Library/Fonts/GeezaPro.ttc",  # macOS Arabic
+                # Windows fonts (Unicode support)
+                "/Windows/Fonts/arial.ttf",
+                "/Windows/Fonts/calibri.ttf",
+            ]
+            
+            for font_path in non_latin_font_paths:
+                try:
+                    font = ImageFont.truetype(font_path, font_size)
+                    logger.info(f"Using font {font_path} for language {language_code}")
+                    return font, font_size
+                except (OSError, IOError):
+                    continue
+            
+            # Fallback: try with smaller size
+            logger.warning(f"No suitable font found for {language_code}, using default")
+            try:
+                font = ImageFont.load_default()
+                return font, max(font_size - 8, 16)
+            except:
+                return None, max(font_size - 8, 16)
+        else:
+            # Latin languages - use existing font selection
+            font_paths = [
+                "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",  # Raspberry Pi
+                "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",  # Common Linux
+                "/System/Library/Fonts/Arial.ttf",  # macOS
+                "/Windows/Fonts/arial.ttf",  # Windows
+            ]
+            
+            for font_path in font_paths:
+                try:
+                    font = ImageFont.truetype(font_path, font_size)
+                    return font, font_size
+                except (OSError, IOError):
+                    continue
+            
+            # Fallback
+            try:
+                font = ImageFont.load_default()
+                return font, 20
+            except:
+                return None, 16
+
     async def create_gif(self, text: str, language: str, original_text: str) -> Tuple[Optional[bytes], str]:
         """Create an animated GIF from text"""
         try:
@@ -146,8 +243,26 @@ class TranslationBot:
             width, height = self.gif_width, self.gif_height
             frames = self.gif_frames
             
+            # Determine language code for font selection
+            lang_code = None
+            for code, name in self.languages.items():
+                if name == language:
+                    lang_code = code
+                    break
+            
+            # Adjust text wrapping for different languages
+            if lang_code in self.non_latin_languages:
+                # Non-Latin languages might need different wrapping
+                if lang_code == 'ar':
+                    # Arabic is RTL, but PIL handles this automatically
+                    wrap_width = self.text_wrap_width
+                else:  # Russian
+                    wrap_width = self.text_wrap_width
+            else:
+                wrap_width = self.text_wrap_width
+            
             # Wrap text for better display
-            wrapped_text = textwrap.fill(text, width=self.text_wrap_width)
+            wrapped_text = textwrap.fill(text, width=wrap_width)
             
             # Create frames
             gif_frames = []
@@ -157,48 +272,30 @@ class TranslationBot:
                 img = Image.new('RGBA', (width, height), color=(255, 255, 255, 255))
                 draw = ImageDraw.Draw(img)
                 
-                # Try to load better fonts with fallbacks for Raspberry Pi
-                font = None
+                # Get appropriate font for this language
                 font_size = self.main_font_size
-                font_paths = [
-                    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",  # Raspberry Pi
-                    "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",  # Common Linux
-                    "/System/Library/Fonts/Arial.ttf",  # macOS
-                    "/Windows/Fonts/arial.ttf",  # Windows
-                ]
-                
-                for font_path in font_paths:
-                    try:
-                        font = ImageFont.truetype(font_path, font_size)
-                        break
-                    except (OSError, IOError):
-                        continue
-                
-                # If no system font found, try smaller default size
-                if font is None:
-                    try:
-                        font = ImageFont.load_default()
-                        # Scale up the default font effect
-                        font_size = 20
-                    except:
-                        font_size = 16
+                font, actual_font_size = self.get_font_for_language(lang_code or 'en', font_size)
                 
                 # Calculate text position with better centering
                 text_lines = wrapped_text.split('\n')
-                total_text_height = len(text_lines) * font_size * 1.2
+                total_text_height = len(text_lines) * actual_font_size * 1.2
                 
                 start_y = (height - total_text_height) // 2 - 30
                 
                 # Draw each line of text
                 for i, line in enumerate(text_lines):
                     if font:
-                        text_bbox = draw.textbbox((0, 0), line, font=font)
-                        line_width = text_bbox[2] - text_bbox[0]
+                        try:
+                            text_bbox = draw.textbbox((0, 0), line, font=font)
+                            line_width = text_bbox[2] - text_bbox[0]
+                        except:
+                            # Fallback for older PIL versions or font issues
+                            line_width = len(line) * (actual_font_size * 0.6)
                     else:
-                        line_width = len(line) * (font_size * 0.6)
+                        line_width = len(line) * (actual_font_size * 0.6)
                     
                     x = (width - line_width) // 2
-                    y = start_y + (i * font_size * 1.3)
+                    y = start_y + (i * actual_font_size * 1.3)
                     
                     # Animated color effect with configurable colors
                     hue = (frame_num * 360 // frames) % 360
@@ -206,27 +303,26 @@ class TranslationBot:
                     
                     # Add text shadow for better readability
                     shadow_offset = 2
-                    draw.text((x + shadow_offset, y + shadow_offset), line, fill=(0, 0, 0, 100), font=font)
-                    draw.text((x, y), line, fill=color, font=font)
+                    try:
+                        draw.text((x + shadow_offset, y + shadow_offset), line, fill=(0, 0, 0, 100), font=font)
+                        draw.text((x, y), line, fill=color, font=font)
+                    except Exception as e:
+                        # Fallback if font rendering fails
+                        logger.warning(f"Font rendering issue: {e}, using fallback")
+                        draw.text((x + shadow_offset, y + shadow_offset), line, fill=(0, 0, 0, 100))
+                        draw.text((x, y), line, fill=color)
                 
                 # Draw language info with smaller font
-                lang_font_size = max(self.lang_font_size, font_size - 8)
-                lang_font = None
-                
-                for font_path in font_paths:
-                    try:
-                        lang_font = ImageFont.truetype(font_path, lang_font_size)
-                        break
-                    except (OSError, IOError):
-                        continue
-                
-                if lang_font is None:
-                    lang_font = font
+                lang_font_size = max(self.lang_font_size, actual_font_size - 8)
+                lang_font, _ = self.get_font_for_language(lang_code or 'en', lang_font_size)
                 
                 lang_text = f"→ {language}"
                 if lang_font:
-                    lang_bbox = draw.textbbox((0, 0), lang_text, font=lang_font)
-                    lang_width = lang_bbox[2] - lang_bbox[0]
+                    try:
+                        lang_bbox = draw.textbbox((0, 0), lang_text, font=lang_font)
+                        lang_width = lang_bbox[2] - lang_bbox[0]
+                    except:
+                        lang_width = len(lang_text) * (lang_font_size * 0.6)
                 else:
                     lang_width = len(lang_text) * (lang_font_size * 0.6)
                 
@@ -234,7 +330,10 @@ class TranslationBot:
                 lang_y = start_y + total_text_height + 20
                 
                 # Language info in a subtle color
-                draw.text((lang_x, lang_y), lang_text, fill=(100, 100, 100), font=lang_font)
+                try:
+                    draw.text((lang_x, lang_y), lang_text, fill=(100, 100, 100), font=lang_font)
+                except:
+                    draw.text((lang_x, lang_y), lang_text, fill=(100, 100, 100))
                 
                 # Convert RGBA to RGB for GIF compatibility
                 rgb_img = Image.new('RGB', (width, height), (255, 255, 255))
@@ -259,7 +358,7 @@ class TranslationBot:
             # Generate filename
             filename = f"translation_{uuid.uuid4().hex[:8]}.gif"
             
-            logger.info(f"Created GIF with {len(gif_frames)} frames at {width}x{height}")
+            logger.info(f"Created GIF with {len(gif_frames)} frames at {width}x{height} for {language}")
             return gif_bytes.getvalue(), filename
             
         except Exception as e:
@@ -368,12 +467,39 @@ class TranslationBot:
                 logger.warning("Empty query received")
                 return []
             
+            # Parse language command from query
+            text_to_translate, target_language = self.parse_language_command(query)
+            
+            # Handle help command
+            if target_language == 'help':
+                help_text = self.create_help_message()
+                return [
+                    InlineQueryResultArticle(
+                        id=f"help_{uuid.uuid4().hex[:6]}",
+                        title="💡 How to use this bot",
+                        description="Complete guide and available commands",
+                        input_message_content=InputTextMessageContent(
+                            message_text=help_text,
+                            parse_mode='Markdown'
+                        )
+                    )
+                ]
+            
+            if not text_to_translate.strip():
+                logger.warning("No text to translate after parsing command")
+                return []
+
+            if target_language:
+                logger.info(f"Using specified language: {self.languages[target_language]}")
+            else:
+                logger.info("Using random language selection")
+            
             # Translate the text
-            translated_text, lang_name, lang_code = await self.translate_text(query)
-            logger.info(f"Translated '{query}' to {lang_name}: '{translated_text}'")
+            translated_text, lang_name, lang_code = await self.translate_text(text_to_translate, target_language)
+            logger.info(f"Translated '{text_to_translate}' to {lang_name}: '{translated_text}'")
             
             # Create GIF
-            gif_bytes, filename = await self.create_gif(translated_text, lang_name, query)
+            gif_bytes, filename = await self.create_gif(translated_text, lang_name, text_to_translate)
             
             if not gif_bytes:
                 logger.error("Failed to create GIF")
@@ -421,6 +547,104 @@ class TranslationBot:
             )
         ]
     
+    def create_help_message(self) -> str:
+        """Create help message with available language commands"""
+        commands = ['🎲 /random - Random Language']
+        for code, name in sorted(self.languages.items()):
+            commands.append(f"🌍 /{code} - {name}")
+        
+        commands_text = "\n".join(commands)
+        return f"""💡 **How to use this bot:**
+
+**Available commands:**
+{commands_text}
+
+**Examples:**
+• `/random Hello world` (random language)
+• `/es Hello world` (Spanish)
+• `/it Ciao mondo` (Italian)
+• `Hello world` (also random language)"""
+    
+    def get_matching_language_commands(self, query: str) -> List[Tuple[str, str, str]]:
+        """Get language commands that match the query. Returns (command, language_name, language_code)"""
+        query_lower = query.lower().strip()
+        
+        # Prepare all commands with /random first
+        all_commands = [('/random', 'Random Language', 'random')]
+        all_commands.extend([(cmd, self.languages[code], code) for cmd, code in self.language_commands.items() if code != 'random'])
+        
+        if not query_lower:
+            # Return all commands if no query, with /random first
+            return all_commands
+        
+        matches = []
+        for command, lang_name, lang_code in all_commands:
+            # Match if query starts with the command or if the language name contains the query
+            if (command.lower().startswith(query_lower) or 
+                lang_name.lower().startswith(query_lower) or
+                (lang_code != 'random' and lang_code.lower().startswith(query_lower))):
+                matches.append((command, lang_name, lang_code))
+        
+        return matches
+    
+    def create_language_command_results(self, query: str) -> List:
+        """Create inline results for language commands using articles (text-based)"""
+        matching_commands = self.get_matching_language_commands(query)
+        results = []
+        
+        for command, lang_name, lang_code in matching_commands[:15]:  # Limit to 15 suggestions
+            result_id = f"cmd_{lang_code}_{uuid.uuid4().hex[:6]}"
+            
+            # Create different descriptions based on command type
+            if lang_code == 'random':
+                title = f"🎲 {command} - {lang_name}"
+                description = "Tap to use random translation"
+            else:
+                title = f"🌍 {command} - {lang_name}"
+                description = f"Tap to use {lang_name} translation"
+            
+            results.append(
+                InlineQueryResultArticle(
+                    id=result_id,
+                    title=title,
+                    description=description,
+                    input_message_content=InputTextMessageContent(
+                        message_text=f"{command} "
+                    )
+                )
+            )
+        
+        return results
+
+    def should_show_command_suggestions(self, query: str) -> bool:
+        """Determine if we should show command suggestions instead of translation"""
+        # Never show command suggestions - always process text
+        return False
+    
+    def create_help_result(self) -> List:
+        """Create a help result when query is empty"""
+        help_text = self.create_help_message()
+        return [
+            InlineQueryResultArticle(
+                id=f"help_cmd_{uuid.uuid4().hex[:6]}",
+                title="📋 /help - Show Commands",
+                description="Get detailed help and command list",
+                input_message_content=InputTextMessageContent(
+                    message_text=help_text,
+                    parse_mode='Markdown'
+                )
+            ),
+            InlineQueryResultArticle(
+                id=f"help_{uuid.uuid4().hex[:6]}",
+                title="💡 How to use this bot",
+                description="Type text to translate to random, or use /lang commands (e.g. /it)",
+                input_message_content=InputTextMessageContent(
+                    message_text=help_text,
+                    parse_mode='Markdown'
+                )
+            )
+        ]
+
     async def handle_inline_query(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle inline queries with debouncing"""
         try:
@@ -429,12 +653,13 @@ class TranslationBot:
             if not self.is_user_whitelisted(user_id):
                 logger.warning(f"Unauthorized user {user_id} tried to use bot")
                 await update.inline_query.answer(
-                    [InlineQueryResultGif(
+                    [InlineQueryResultArticle(
                         id=str(uuid.uuid4()),
-                        gif_url="https://media.giphy.com/media/l2JehQ2GitHGdVG9y/giphy.gif",
-                        thumbnail_url="https://media.giphy.com/media/l2JehQ2GitHGdVG9y/giphy.gif",
                         title="❌ Access Denied",
-                        caption="You are not authorized to use this bot."
+                        description="You are not authorized to use this bot.",
+                        input_message_content=InputTextMessageContent(
+                            message_text="❌ You are not authorized to use this bot."
+                        )
                     )],
                     cache_time=1
                 )
@@ -454,24 +679,13 @@ class TranslationBot:
             
             logger.info(f"Received inline query from user {user_id}: '{query}' (will wait {self.debounce_delay}s)")
             
+            # Show help if query is empty
             if not query:
-                # Show help message for empty query using a simple GIF result
-                await update.inline_query.answer(
-                    [InlineQueryResultGif(
-                        id=str(uuid.uuid4()),
-                        gif_url="https://media.giphy.com/media/l0HlBO7eyXzSZkJri/giphy.gif",  # Help GIF
-                        thumbnail_url="https://media.giphy.com/media/l0HlBO7eyXzSZkJri/giphy.gif",
-                        title="💡 How to use",
-                        caption="Type some text to translate and create a GIF!",
-                        input_message_content=InputTextMessageContent(
-                            message_text="💡 Type some text after @annoygminline_bot to translate it to a random language and create an animated GIF!"
-                        )
-                    )],
-                    cache_time=1
-                )
+                help_results = self.create_help_result()
+                await update.inline_query.answer(help_results, cache_time=1)
                 return
             
-            # Debounce mechanism - wait before processing
+            # Debounce mechanism - wait before processing translation
             async def debounced_processing():
                 try:
                     # Wait for debounce delay
