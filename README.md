@@ -25,17 +25,22 @@
 
 That's it!
 
+Check logs:
+```bash
+sudo journalctl -u telegram-gif-bot -f
+```
+
 ## How to Update
 
 ```bash
 cd inline-gif-telegram-bot
 git pull origin main
-sudo systemctl restart telegram-bot
+sudo systemctl restart telegram-gif-bot
 ```
 
 If you get merge conflicts due to local changes, force update with:
 ```bash
 git reset --hard HEAD
 git pull origin main
-sudo systemctl restart telegram-bot
+sudo systemctl restart telegram-gif-bot
 ```
